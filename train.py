@@ -96,7 +96,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         #gt_depth = gt_depth / gt_depth.max()
         if depth_loss:
             depth_mask = gt_depth > 0
-            Ld1 = l1_loss(depth, gt_depth) * 0.1 * depth_mask.float()
+            Ld1 = torch.abs((depth - gt_depth) * depth_mask.float()).mean() * 0.1
             loss = loss + Ld1
         else:
             Ld1 = None
