@@ -14,6 +14,7 @@ import sys
 from datetime import datetime
 import numpy as np
 import random
+import cv2
 
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
@@ -25,6 +26,18 @@ def PILtoTorch(pil_image, resolution):
         return resized_image.permute(2, 0, 1)
     else:
         return resized_image.unsqueeze(dim=-1).permute(2, 0, 1)
+
+
+def ArrayToTorch(array, resolution):
+     # w : 3840
+    array = array.transpose(1, 0)
+    array = cv2.resize(array, dsize=resolution, interpolation=cv2.INTER_NEAREST).astype(np.float32)
+    resized_image_torch = torch.from_numpy(array)
+    if len(resized_image_torch.shape) == 3:
+        return resized_image_torch.permute(2, 0, 1)
+    else:
+        return resized_image_torch.unsqueeze(dim=-1).permute(2, 0, 1)
+    
 
 def get_expon_lr_func(
     lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000

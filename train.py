@@ -28,7 +28,7 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, depth_loss):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -80,13 +80,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
+
+        if depth_loss:
+            viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+            gt_depth = viewpoint_cam.depth.cuda()
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-
+        if depth_loss:
+            depth = render_pkg["depth"]
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+
+        #gt_depth = gt_depth / gt_depth.max()
+        if depth_loss:
+            depth_mask = gt_depth > 0
+            Ld1 = l1_loss(depth, gt_depth) * 0.1 * depth_mask.float()
+            loss = loss + Ld1
+        else:
+            Ld1 = None
+
         loss.backward()
 
         iter_end.record()
@@ -101,7 +115,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+            training_report(tb_writer, iteration, Ll1, Ld1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -150,9 +164,11 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+def training_report(tb_writer, iteration, Ll1, Ld1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
+        if Ld1 is not None:
+            tb_writer.add_scalar('train_loss_patches/l1_depth_loss', Ld1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
         tb_writer.add_scalar('iter_time', elapsed, iteration)
 
@@ -202,6 +218,7 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--depth_loss", type=bool, default=False)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -213,7 +230,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.depth_loss)
 
     # All done
     print("\nTraining complete.")

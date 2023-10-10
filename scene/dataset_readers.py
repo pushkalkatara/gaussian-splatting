@@ -18,6 +18,7 @@ from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
 import numpy as np
 import json
+import cv2
 from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
@@ -30,6 +31,7 @@ class CameraInfo(NamedTuple):
     FovY: np.array
     FovX: np.array
     image: np.array
+    depth: np.array
     image_path: str
     image_name: str
     width: int
@@ -65,7 +67,7 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, depth_folder):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -98,8 +100,12 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         image_name = os.path.basename(image_path).split(".")[0]
         image = Image.open(image_path)
 
+        depth_name = os.path.basename(image_path).split(".")[0]
+        depth_path = os.path.join(depth_folder, depth_name + ".png")
+        depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height)
+                              image_path=image_path, image_name=image_name, width=width, height=height, depth=depth)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -142,7 +148,12 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
     reading_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
+    depth_reading_dir = "depth"
+    cam_infos_unsorted = readColmapCameras(
+        cam_extrinsics=cam_extrinsics, 
+        cam_intrinsics=cam_intrinsics, 
+        images_folder=os.path.join(path, reading_dir),
+        depth_folder=os.path.join(path, depth_reading_dir))
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     if eval:
@@ -183,9 +194,12 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
         contents = json.load(json_file)
         fovx = contents["camera_angle_x"]
 
+        is_test = "test" in transformsfile
+
         frames = contents["frames"]
         for idx, frame in enumerate(frames):
             cam_name = os.path.join(path, frame["file_path"] + extension)
+            depth_name = os.path.join(path, frame["file_path"] + "_depth_0001" + ".png")
 
             # NeRF 'transform_matrix' is a camera-to-world transform
             c2w = np.array(frame["transform_matrix"])
@@ -201,6 +215,12 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             image_name = Path(cam_name).stem
             image = Image.open(image_path)
 
+            depth = cv2.imread(depth_name, cv2.IMREAD_UNCHANGED)
+            if depth.shape[2] == 4:
+                # alpha channel is depth
+                depth = depth[:, :, -1]
+                depth = depth.astype(np.float32) / 255.0
+
             im_data = np.array(image.convert("RGBA"))
 
             bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
@@ -214,13 +234,13 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             FovX = fovx
 
             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
+                            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1], depth=depth))
             
     return cam_infos
 
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
     print("Reading Training Transforms")
-    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
+    train_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension)
     print("Reading Test Transforms")
     test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension)
     
